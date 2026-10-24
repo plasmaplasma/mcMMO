@@ -1,0 +1,64 @@
+name: Sync official mcMMO upstream
+
+on:
+  schedule:
+    - cron: '23 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mcmmo-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'plasmaplasma/mcMMO'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out master with complete history
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure Java 17 and Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Merge compatible upstream changes
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/mcMMO-Dev/mcMMO.git
+          git fetch --no-tags upstream master
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo 'Official upstream is already included.'
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git merge --no-ff --no-edit upstream/master; then
+            git merge --abort || true
+            echo 'Upstream has conflicting changes; leaving master untouched.' >&2
+            exit 1
+          fi
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Verify build and SQL tests
+        if: steps.merge.outputs.changed == 'true'
+        run: mvn --batch-mode --no-transfer-progress verify -Psql-tests -DdisableXmlReport=true
+
+      - name: Publish successful merge
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:master
